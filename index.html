@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Paper Phygitals — open packs with play money</title>
+<style>
+:root{--bg:#0d0d10;--cd:#18181d;--tx:#eee;--mu:#9a9aa5;--bd:#2d2d35;--ac:#9a78ff;--up:#4cd07d;--dn:#ff6b6b}
+@media(prefers-color-scheme:light){:root{--bg:#f4f4f2;--cd:#fff;--tx:#17171a;--mu:#777;--bd:#ddd;--ac:#7c4dff;--up:#14873c;--dn:#c62828}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:14px}
+header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px}h1{font-size:19px;margin:0}
+.mu{color:var(--mu);font-size:12px}.b{background:var(--cd);border:1px solid var(--bd);border-radius:12px;padding:12px;margin:10px 0}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px}.v{font-weight:700;font-size:18px}
+.up{color:var(--up)}.dn{color:var(--dn)}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:8px 12px;cursor:pointer;font-size:13px;margin:0 4px 4px 0}
+button.o{background:transparent;color:var(--tx);border:1px solid var(--bd)}button.on{outline:2px solid var(--ac)}button:disabled{opacity:.5}
+input{width:80px;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px}
+.rv{display:flex;gap:14px;align-items:center;justify-content:center;border:2px solid var(--bd);border-radius:12px;padding:14px;min-height:150px;animation:pop .5s}
+.rv img{height:130px;border-radius:6px;background:#0003}
+@keyframes pop{0%{transform:rotateY(90deg) scale(.8);opacity:0}100%{transform:none;opacity:1}}
+.bar{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.chip{font-size:11px;border:1px solid var(--bd);border-radius:99px;padding:2px 8px}
+.vg{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;max-height:420px;overflow-y:auto}
+.vc{border:1px solid var(--bd);border-radius:8px;padding:6px;font-size:11px;text-align:center}.vc img{width:100%;height:100px;object-fit:contain}.vc .ph{height:100px;display:flex;align-items:center;justify-content:center;color:var(--mu)}
+.vc button{width:100%;margin:4px 0 0;padding:4px}
+.err{color:var(--dn)}
+</style></head><body><main>
+<header><h1>Paper Phygitals</h1><span class="mu">Simulator · play money · not affiliated with Phygitals</span></header>
+<div id="msg" class="mu"></div>
+<div class="b"><div class="g" id="st"></div><div id="ch"></div></div>
+<div class="b"><div id="cats"></div><div id="pk" style="margin-top:6px"></div><div class="bar" id="bands"></div><div class="mu" id="inf" style="margin:6px 0"></div>
+<button onclick="go(1)">Open 1</button><button id="bmax">Open 8</button><button onclick="go(50)">Open 50</button>
+<span class="mu">Auto-sell under $</span><input id="au" type="number" value="0" onchange="S.au=+this.value||0;save()">
+<div style="margin-top:6px"><button class="o" onclick="add(100)">+$100</button><button class="o" onclick="add(1000)">+$1k</button><button class="o" onclick="add(10000)">+$10k</button><button class="o" onclick="reset()">Reset</button></div></div>
+<div id="rv" class="rv"><span class="mu">Open a pack</span></div>
+<div class="b"><div style="display:flex;justify-content:space-between"><b>Vault</b><button class="o" onclick="sellAll()">Sell all</button></div><div class="vg" id="vl"></div></div>
+<div class="mu">Pack prices, value bands, odds, EV and buyback are read live from Phygitals' public pack data. Top-hit cards (names, images, values) are real; how values spread inside each band is modelled so the simulated EV matches the published EV. Pulls below the top-hit range show a value only. Simulation only, nothing here is real or has value.</div>
+</main>
+<script src="model.js"></script>
+<script>
+const $=i=>document.getElementById(i),f=n=>"$"+n.toLocaleString(undefined,{maximumFractionDigits:2});
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fresh=(b=1000)=>({bal:b,st:b,spent:0,back:0,v:[],h:[b],slug:"rookie-pack",cat:"pokemon",au:0,id:0,best:0,n:0});
+let S=fresh();try{const x=localStorage.getItem("pph2");if(x)S=Object.assign(fresh(),JSON.parse(x))}catch(e){}
+const save=()=>{try{localStorage.setItem("pph2",JSON.stringify(S))}catch(e){}};
+const PK={};  // slug -> {meta, cat, info, model, chase, loading, err}
+const api=(kind,slug)=>fetch(`/api/phy?kind=${kind}${slug?"&slug="+slug:""}`).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(j=>j.json);
+const bbOf=i=>{let x=+i.buyback_percent;if(!(x>0))x=.85;return x>1?x/100:x};
+const cur=()=>PK[S.slug];
+async function init(){
+  $("msg").textContent="Loading packs…";
+  try{
+    const list=await api("list");
+    list.filter(p=>p.enable&&p.in_stock&&!/N\/A/.test(p.name)).forEach(p=>{PK[p.slug]={meta:p,cat:p.category||(p.categories||[])[0]||"other",info:null,model:null,chase:null}});
+  }catch(e){$("msg").innerHTML='<span class="err">Could not load pack data. Is the /api/phy function deployed? (see README)</span>';return}
+  if(!PK[S.slug]){S.cat=cats()[0];S.slug=packsIn(S.cat)[0]}
+  $("msg").textContent="";ensure(S.slug);draw();
+}
+const cats=()=>{const t={};Object.values(PK).forEach(p=>t[p.cat]=(t[p.cat]||0)+(p.meta.num_pulls_7d||0));return Object.keys(t).sort((a,b)=>t[b]-t[a])};
+const packsIn=c=>Object.keys(PK).filter(s=>PK[s].cat===c).sort((a,b)=>+PK[a].meta.mint_price-+PK[b].meta.mint_price);
+function ensure(slug){const p=PK[slug];if(!p||p.info||p.loading)return;
+  p.loading=Promise.all([
+    api("claw",slug).then(i=>{p.info=i;p.model=PhyModel.buildModel(i)}),
+    api("chase",slug).then(j=>{p.chase=(Array.isArray(j)?j:[]).filter(c=>c&&c.fmv>0).sort((a,b)=>a.fmv-b.fmv)}).catch(()=>{p.chase=[]})
+  ]).catch(()=>{p.err=true}).finally(()=>{p.loading=null;draw()});}
+function pickCard(p,r){
+  const bd=r.band;let name=bd.name+" graded card",img=null,v=r.v;
+  const ch=p.chase;
+  if(r.top&&ch&&ch.length&&v>=ch[0].fmv){
+    const near=ch.slice().sort((a,b)=>Math.abs(a.fmv-v)-Math.abs(b.fmv-v)).slice(0,4);
+    const c=near[(Math.random()*near.length)|0];name=c.name;img=c.image;v=c.fmv;
+  }
+  return{id:++S.id,v,name,img,color:bd.color,band:bd.name,bb:bbOf(p.info)};
+}
+function go(n){const p=cur();if(!p||!p.info||!p.model||!p.model.W)return;let c;
+  for(let i=0;i<n;i++){const pr=+p.info.mint_price;if(S.bal<pr)break;S.bal-=pr;S.spent+=pr;S.n++;
+    c=pickCard(p,PhyModel.roll(p.model,Math.random));if(c.v>S.best)S.best=c.v;
+    if(c.v<S.au){S.bal+=c.v*c.bb;S.back+=c.v*c.bb}else S.v.push(c);S.h.push(+net().toFixed(2))}
+  if(S.h.length>1500)S.h=S.h.slice(-1000);if(c)rev(c);save();draw()}
+const imgTag=(u)=>u?`<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`:"";
+function rev(c){const e=$("rv");e.style.borderColor=c.color;e.style.boxShadow=`0 0 22px ${c.color}88`;e.style.animation="none";void e.offsetWidth;e.style.animation="";
+  e.innerHTML=imgTag(c.img)+`<div><div class="mu" style="color:${esc(c.color)}">${esc(c.band)}</div><div style="font-weight:700;margin:4px 0;max-width:320px">${esc(c.name)}</div><div class="v">${f(c.v)}</div><div class="mu">buyback ${f(c.v*c.bb)}</div></div>`}
+const net=()=>S.bal+S.v.reduce((a,c)=>a+c.v*c.bb,0);
+function sell(id){const i=S.v.findIndex(c=>c.id===id);if(i<0)return;const c=S.v.splice(i,1)[0];S.bal+=c.v*c.bb;S.back+=c.v*c.bb;save();draw()}
+function sellAll(){S.v.forEach(c=>{S.bal+=c.v*c.bb;S.back+=c.v*c.bb});S.v=[];S.h.push(+net().toFixed(2));save();draw()}
+function add(a){S.bal+=a;S.st+=a;S.h.push(+net().toFixed(2));save();draw()}
+function reset(){if(confirm("Reset everything?")){S=fresh();if(!PK[S.slug]){S.cat=cats()[0];S.slug=packsIn(S.cat)[0]}save();draw()}}
+function pickCat(c){S.cat=c;if(PK[S.slug]?.cat!==c)S.slug=packsIn(c)[0];save();ensure(S.slug);draw()}
+function pick(s){S.slug=s;save();ensure(s);draw()}
+function chart(){const h=S.h.slice(-300);if(h.length<2)return"";const mn=Math.min(...h),mx=Math.max(...h),r=mx-mn||1;
+  const pt=h.map((y,i)=>(i/(h.length-1)*300).toFixed(1)+","+(55-(y-mn)/r*50).toFixed(1)).join(" ");
+  return`<svg viewBox="0 0 300 60" preserveAspectRatio="none" style="width:100%;height:60px;margin-top:8px"><polyline fill="none" stroke="${h[h.length-1]>=h[0]?"var(--up)":"var(--dn)"}" stroke-width="2" points="${pt}"/></svg>`}
+function draw(){const p=cur();if(!p)return;const n=net(),pl=n-S.st;
+  $("st").innerHTML=[["Cash",f(S.bal)],["Net worth",f(n)],["P&L",`<span class="${pl>=0?"up":"dn"}">${pl>=0?"+":""}${f(pl)}</span>`],["Packs opened",S.n],["Best pull",f(S.best)]].map(x=>`<div><div class="mu">${x[0]}</div><div class="v">${x[1]}</div></div>`).join("");
+  $("ch").innerHTML=chart();
+  $("cats").innerHTML=cats().map(c=>`<button class="o ${c===S.cat?"on":""}" onclick="pickCat('${esc(c)}')">${esc(c)}</button>`).join("");
+  $("pk").innerHTML=packsIn(S.cat).map(s=>`<button class="o ${s===S.slug?"on":""}" onclick="pick('${s}')">${esc(PK[s].meta.name.replace(" Pack",""))} $${PK[s].meta.mint_price}</button>`).join("");
+  const mx=p.info?+p.info.max_per_mint||8:8;$("bmax").textContent="Open "+mx;$("bmax").onclick=()=>go(mx);
+  if(!p.info){$("bands").innerHTML="";$("inf").innerHTML=p.err?'<span class="err">Could not load this pack.</span>':"Loading pack…";}
+  else{const W=p.model.W;$("bands").innerHTML=p.model.bands.map(b=>`<span class="chip" style="border-color:${esc(b.color)}">${esc(b.name)} ${f(b.lower)}–${f(b.upper)} · ${(b.weight/W*100).toFixed(1)}%</span>`).join("");
+    const pr=+p.info.mint_price,bb=bbOf(p.info);
+    $("inf").textContent=`Published EV ${f(+p.info.ev)} (range ${f(+p.info.min_ev)}–${f(+p.info.max_ev)}) · buyback ${(bb*100).toFixed(0)}% · sell-back return ≈ ${(+p.info.ev/pr*bb*100).toFixed(1)}% · ${p.chase?p.chase.length+" real top-hit cards":"loading top hits…"}`;}
+  $("au").value=S.au;
+  $("vl").innerHTML=S.v.slice().sort((a,b)=>b.v-a.v).slice(0,120).map(c=>`<div class="vc" style="border-color:${esc(c.color)}">${c.img?imgTag(c.img):'<div class="ph">'+esc(c.band)+'</div>'}<div title="${esc(c.name)}" style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(c.name)}</div><b>${f(c.v)}</b><button class="o" onclick="sell(${c.id})">Sell ${f(c.v*c.bb)}</button></div>`).join("")||'<div class="mu">Empty</div>'}
+init();
+</script></body></html>
